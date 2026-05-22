@@ -30,33 +30,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
-      oc_sha: ${{ steps.check.outputs.oc_sha }}
-      oc_version: ${{ steps.check.outputs.oc_version }}
+      should_build: ${{ steps.meta.outputs.should_build }}
+      oc_sha: ${{ steps.meta.outputs.oc_sha }}
+      oc_short_sha: ${{ steps.meta.outputs.oc_short_sha }}
+      oc_version: ${{ steps.meta.outputs.oc_version }}
     steps:
-      - name: Fetch latest OpenClaw commit
-        id: check
+      - name: Resolve OpenClaw metadata
+        id: meta
         run: |
-          # Get latest OpenClaw commit SHA
+          set -euo pipefail
+
           OC_SHA=$(curl -sf "https://api.github.com/repos/${OC_REPO}/commits?sha=${OC_REF}&per_page=1" | jq -r '.[0].sha')
           if [ -z "$OC_SHA" ] || [ "$OC_SHA" = "null" ]; then
             echo "::error::Failed to fetch latest OpenClaw commit"
             exit 1
           fi
-          echo "oc_sha=${OC_SHA}" >> "$GITHUB_OUTPUT"
-          echo "Latest OpenClaw commit: ${OC_SHA}"
+          OC_SHORT_SHA="${OC_SHA:0:7}"
 
-          # If force build, always proceed
+          GRADLE_URL="https://raw.githubusercontent.com/${OC_REPO}/${OC_REF}/apps/android/app/build.gradle.kts"
+          GRADLE_CONTENT=$(curl -sf "$GRADLE_URL" || true)
+          OC_VERSION=$(echo "$GRADLE_CONTENT" | grep -oP 'versionName\s*=\s*"\K[^"]+' || true)
+          if [ -z "$OC_VERSION" ]; then
+            echo "::warning::Could not extract versionName, using date-based version"
+            OC_VERSION=$(date +%Y.%-m.%-d)
+          fi
+
+          echo "oc_sha=${OC_SHA}" >> "$GITHUB_OUTPUT"
+          echo "oc_short_sha=${OC_SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "oc_version=${OC_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Latest OpenClaw commit: ${OC_SHA}"
+          echo "OpenClaw version: ${OC_VERSION}"
+
           if [ "${FORCE_BUILD}" = "true" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             echo "Force build requested"
             exit 0
           fi
 
-          # Get the last release body to find previous commit
-          LAST_BODY=$(curl -sf "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.body // ""')
+          LAST_BODY=$(curl -sf "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.body // ""' || true)
           PREV_SHA=$(echo "$LAST_BODY" | grep -oP '(?<=openclaw-commit: )\S+' || true)
-
           echo "Previous commit: ${PREV_SHA:-none}"
 
           if [ "$OC_SHA" = "$PREV_SHA" ]; then
@@ -67,34 +79,14 @@ jobs:
             echo "New commits detected, will build"
           fi
 
-      - name: Extract OpenClaw version
-        if: steps.check.outputs.should_build == 'true'
-        run: |
-          # Fetch build.gradle.kts to read version
-          GRADLE_URL="https://raw.githubusercontent.com/${OC_REPO}/${OC_REF}/apps/android/app/build.gradle.kts"
-          GRADLE_CONTENT=$(curl -sf "$GRADLE_URL")
-          if [ -z "$GRADLE_CONTENT" ]; then
-            echo "::warning::Could not fetch build.gradle.kts, using date-based version"
-            echo "oc_version=$(date +%Y.%-m.%-d)" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Extract versionName
-          VER=$(echo "$GRADLE_CONTENT" | grep -oP 'versionName\s*=\s*"\K[^"]+' || true)
-          if [ -z "$VER" ]; then
-            echo "::warning::Could not extract versionName, using date-based version"
-            echo "oc_version=$(date +%Y.%-m.%-d)" >> "$GITHUB_OUTPUT"
-          else
-            echo "oc_version=${VER}" >> "$GITHUB_OUTPUT"
-            echo "OpenClaw version: ${VER}"
-          fi
-
   build:
-    name: Build Android APKs
+    name: Build Android APKs (${{ matrix.flavor }})
     needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
         flavor: [thirdParty, play]
     steps:
@@ -129,28 +121,41 @@ jobs:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Xmx3g"
         run: |
+          set -euo pipefail
           TASK="assemble${{ matrix.flavor }}Debug"
           ./gradlew ":app:${TASK}" --no-daemon --stacktrace
 
-      - name: Rename APK
+      - name: Locate and rename APK
         id: rename
         run: |
-          SRC=openclaw/apps/android/app/build/outputs/apk/${{ matrix.flavor }}/debug/app-${{ matrix.flavor }}-debug.apk
-          DST=openclaw-android-${{ needs.check.outputs.oc_version }}-${{ matrix.flavor }}-debug.apk
-          mv "$SRC" "$DST"
+          set -euo pipefail
+          OUT_DIR="openclaw/apps/android/app/build/outputs/apk/${{ matrix.flavor }}/debug"
+          echo "APK output dir: ${OUT_DIR}"
+          find "$OUT_DIR" -maxdepth 1 -type f -name "*.apk" -print -exec ls -lh {} \;
+
+          SRC=$(find "$OUT_DIR" -maxdepth 1 -type f -name "*.apk" | head -n 1)
+          if [ -z "$SRC" ]; then
+            echo "::error::No APK found in ${OUT_DIR}"
+            exit 1
+          fi
+
+          DST="openclaw-android-${{ needs.check.outputs.oc_version }}-${{ needs.check.outputs.oc_short_sha }}-${{ matrix.flavor }}-debug.apk"
+          cp "$SRC" "$DST"
+          ls -lh "$DST"
           echo "apk_name=${DST}" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ matrix.flavor }}
-          path: openclaw-android-${{ needs.check.outputs.oc_version }}-${{ matrix.flavor }}-debug.apk
+          path: openclaw-android-${{ needs.check.outputs.oc_version }}-${{ needs.check.outputs.oc_short_sha }}-${{ matrix.flavor }}-debug.apk
           if-no-files-found: error
           retention-days: 14
 
   release:
     name: Create GitHub Release
     needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -166,8 +171,8 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.check.outputs.oc_version }}
-          name: OpenClaw ${{ needs.check.outputs.oc_version }}
+          tag_name: v${{ needs.check.outputs.oc_version }}-${{ needs.check.outputs.oc_short_sha }}
+          name: OpenClaw Android ${{ needs.check.outputs.oc_version }} (${{ needs.check.outputs.oc_short_sha }})
           draft: false
           prerelease: false
           generate_release_notes: false
@@ -175,17 +180,17 @@ jobs:
             Auto-built from [openclaw/openclaw@${{ needs.check.outputs.oc_sha }}](https://github.com/openclaw/openclaw/commit/${{ needs.check.outputs.oc_sha }})
 
             OpenClaw version: **${{ needs.check.outputs.oc_version }}**
-            Build time: `${{ github.event.repository.updated_at || 'scheduled' }}`
+            OpenClaw commit: `${{ needs.check.outputs.oc_sha }}`
 
             ### APKs
-            - `openclaw-android-*-thirdParty-debug.apk` — thirdParty flavor (full capabilities, recommended for sideloading)
-            - `openclaw-android-*-play-debug.apk` — Play flavor (closer to Google Play build)
+            - `*-thirdParty-debug.apk` — thirdParty flavor (full capabilities, recommended for sideloading)
+            - `*-play-debug.apk` — Play flavor (closer to Google Play build)
 
             ### Install
             If you already have the Play version installed (`ai.openclaw.app`), uninstall it first:
             ```
             adb uninstall ai.openclaw.app
-            adb install openclaw-android-<version>-thirdParty-debug.apk
+            adb install openclaw-android-<version>-<sha>-thirdParty-debug.apk
             ```
 
             ---
