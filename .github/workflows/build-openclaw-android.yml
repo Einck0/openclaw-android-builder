@@ -80,7 +80,7 @@ jobs:
           fi
 
   build:
-    name: Build Android APKs (${{ matrix.flavor }})
+    name: Build signed Android APKs (${{ matrix.flavor }})
     needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
@@ -88,7 +88,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flavor: [thirdParty, play]
+        include:
+          - flavor: thirdParty
+            output_name: openclaw.apk
+          - flavor: play
+            output_name: openclaw-play.apk
     steps:
       - name: Checkout OpenClaw source
         uses: actions/checkout@v4
@@ -114,7 +118,38 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      - name: Build ${{ matrix.flavor }} debug APK
+      - name: Configure stable Android signing
+        env:
+          OPENCLAW_ANDROID_KEYSTORE_B64: ${{ secrets.OPENCLAW_ANDROID_KEYSTORE_B64 }}
+          OPENCLAW_ANDROID_STORE_PASSWORD: ${{ secrets.OPENCLAW_ANDROID_STORE_PASSWORD }}
+          OPENCLAW_ANDROID_KEY_ALIAS: ${{ secrets.OPENCLAW_ANDROID_KEY_ALIAS }}
+          OPENCLAW_ANDROID_KEY_PASSWORD: ${{ secrets.OPENCLAW_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in \
+            OPENCLAW_ANDROID_KEYSTORE_B64 \
+            OPENCLAW_ANDROID_STORE_PASSWORD \
+            OPENCLAW_ANDROID_KEY_ALIAS \
+            OPENCLAW_ANDROID_KEY_PASSWORD
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing GitHub secret: ${name}"
+              exit 1
+            fi
+          done
+
+          mkdir -p signing ~/.gradle
+          echo "$OPENCLAW_ANDROID_KEYSTORE_B64" | base64 -d > signing/openclaw-android-release.keystore
+          chmod 600 signing/openclaw-android-release.keystore
+          {
+            echo "OPENCLAW_ANDROID_STORE_FILE=${GITHUB_WORKSPACE}/signing/openclaw-android-release.keystore"
+            echo "OPENCLAW_ANDROID_STORE_PASSWORD=${OPENCLAW_ANDROID_STORE_PASSWORD}"
+            echo "OPENCLAW_ANDROID_KEY_ALIAS=${OPENCLAW_ANDROID_KEY_ALIAS}"
+            echo "OPENCLAW_ANDROID_KEY_PASSWORD=${OPENCLAW_ANDROID_KEY_PASSWORD}"
+          } >> ~/.gradle/gradle.properties
+          chmod 600 ~/.gradle/gradle.properties
+
+      - name: Build ${{ matrix.flavor }} release APK
         working-directory: openclaw/apps/android
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
@@ -122,14 +157,14 @@ jobs:
           GRADLE_OPTS: "-Dorg.gradle.daemon=false -Xmx3g"
         run: |
           set -euo pipefail
-          TASK="assemble${{ matrix.flavor }}Debug"
+          TASK="assemble${{ matrix.flavor }}Release"
           ./gradlew ":app:${TASK}" --no-daemon --stacktrace
 
       - name: Locate and rename APK
         id: rename
         run: |
           set -euo pipefail
-          OUT_DIR="openclaw/apps/android/app/build/outputs/apk/${{ matrix.flavor }}/debug"
+          OUT_DIR="openclaw/apps/android/app/build/outputs/apk/${{ matrix.flavor }}/release"
           echo "APK output dir: ${OUT_DIR}"
           find "$OUT_DIR" -maxdepth 1 -type f -name "*.apk" -print -exec ls -lh {} \;
 
@@ -139,7 +174,7 @@ jobs:
             exit 1
           fi
 
-          DST="openclaw-android-${{ needs.check.outputs.oc_version }}-${{ needs.check.outputs.oc_short_sha }}-${{ matrix.flavor }}-debug.apk"
+          DST="${{ matrix.output_name }}"
           cp "$SRC" "$DST"
           ls -lh "$DST"
           echo "apk_name=${DST}" >> "$GITHUB_OUTPUT"
@@ -147,8 +182,8 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ matrix.flavor }}
-          path: openclaw-android-${{ needs.check.outputs.oc_version }}-${{ needs.check.outputs.oc_short_sha }}-${{ matrix.flavor }}-debug.apk
+          name: ${{ matrix.output_name }}
+          path: ${{ matrix.output_name }}
           if-no-files-found: error
           retention-days: 14
 
@@ -163,7 +198,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: apks
-          pattern: apk-*
+          pattern: openclaw*.apk
 
       - name: List downloaded files
         run: find apks -type f -name "*.apk" -exec ls -lh {} \;
@@ -183,14 +218,14 @@ jobs:
             OpenClaw commit: `${{ needs.check.outputs.oc_sha }}`
 
             ### APKs
-            - `*-thirdParty-debug.apk` — thirdParty flavor (full capabilities, recommended for sideloading)
-            - `*-play-debug.apk` — Play flavor (closer to Google Play build)
+            - `openclaw.apk` — thirdParty flavor (full capabilities, recommended for sideloading)
+            - `openclaw-play.apk` — Play flavor (closer to Google Play build)
 
             ### Install
-            If you already have the Play version installed (`ai.openclaw.app`), uninstall it first:
+            If you already have the Play version installed (`ai.openclaw.app`), uninstall it first. After that, future APKs built by this workflow can be installed as updates because the release signing key is stable:
             ```
             adb uninstall ai.openclaw.app
-            adb install openclaw-android-<version>-<sha>-thirdParty-debug.apk
+            adb install openclaw.apk
             ```
 
             ---

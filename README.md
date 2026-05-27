@@ -5,11 +5,39 @@
 ## 自动行为
 
 每 **6 小时**自动检查 OpenClaw 官方仓库是否有新 commit，如果有则：
+
 1. 拉取最新源码
-2. 编译 `thirdParty` 和 `play` 两个 flavor 的 debug APK
+2. 使用固定 release keystore 编译 `thirdParty` 和 `play` 两个 flavor 的 signed APK
 3. 创建 GitHub Release 并附带 APK 下载
 
-Release tag 格式：`v<OpenClaw version>`（如 `v2026.5.21`）
+Release tag 格式：`v<OpenClaw version>-<short sha>`（如 `v2026.5.26-abcdef0`）
+
+## GitHub Secrets
+
+为了保证每次更新都能覆盖安装，必须在仓库 Settings → Secrets and variables → Actions 里配置同一把签名：
+
+- `OPENCLAW_ANDROID_KEYSTORE_B64`：release keystore 文件的 base64 内容
+- `OPENCLAW_ANDROID_STORE_PASSWORD`：keystore 密码
+- `OPENCLAW_ANDROID_KEY_ALIAS`：key alias
+- `OPENCLAW_ANDROID_KEY_PASSWORD`：key 密码
+
+示例生成方式：
+
+```bash
+keytool -genkeypair \
+  -v \
+  -storetype PKCS12 \
+  -keystore openclaw-android-release.keystore \
+  -alias openclaw-einck \
+  -keyalg RSA \
+  -keysize 4096 \
+  -validity 10000 \
+  -dname "CN=Einck OpenClaw Android,O=Einck,OU=OpenClaw,C=CN"
+
+base64 -w 0 openclaw-android-release.keystore
+```
+
+> 注意：如果手机上现在安装的是 GitHub Actions 旧 debug 签名包，第一次切换到 release 签名包仍然需要卸载一次。之后只要 Secrets 不变，就可以直接覆盖安装。
 
 ## 手动触发
 
@@ -24,17 +52,22 @@ Release tag 格式：`v<OpenClaw version>`（如 `v2026.5.21`）
 
 ## APK 说明
 
-- `thirdPartyDebug`：侧载版，保留完整能力/权限，推荐自己测试用
-- `playDebug`：更接近 Google Play 版，移除部分 Play 限制权限相关能力
+- `openclaw.apk`：`thirdPartyRelease`，侧载版，保留完整能力/权限，推荐自己测试用
+- `openclaw-play.apk`：`playRelease`，更接近 Google Play 版
 
 ## 安装
 
-GitHub Actions 编出来的是 debug APK，不是 Google Play 签名版。
-如果手机已安装 Play 版 `ai.openclaw.app`，需要先卸载再安装：
+如果手机已安装 Play 版 `ai.openclaw.app` 或旧 debug 签名包，需要先卸载一次：
 
 ```bash
 adb uninstall ai.openclaw.app
-adb install openclaw-android-<version>-thirdParty-debug.apk
+adb install openclaw.apk
+```
+
+之后 GitHub Actions 新构建的 `openclaw.apk` 可以直接覆盖安装：
+
+```bash
+adb install -r openclaw.apk
 ```
 
 ## 为什么没有预编译 APK？
