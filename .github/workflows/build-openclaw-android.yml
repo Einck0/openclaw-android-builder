@@ -90,9 +90,9 @@ jobs:
       matrix:
         include:
           - flavor: thirdParty
-            output_name: openclaw.apk
+            output_prefix: openclaw
           - flavor: play
-            output_name: openclaw-play.apk
+            output_prefix: openclaw-play
     steps:
       - name: Checkout OpenClaw source
         uses: actions/checkout@v4
@@ -174,7 +174,7 @@ jobs:
             exit 1
           fi
 
-          DST="${{ matrix.output_name }}"
+          DST="${{ matrix.output_prefix }}-${{ needs.check.outputs.oc_version }}.apk"
           cp "$SRC" "$DST"
           ls -lh "$DST"
           echo "apk_name=${DST}" >> "$GITHUB_OUTPUT"
@@ -182,8 +182,8 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.output_name }}
-          path: ${{ matrix.output_name }}
+          name: ${{ matrix.output_prefix }}-${{ needs.check.outputs.oc_version }}.apk
+          path: ${{ matrix.output_prefix }}-${{ needs.check.outputs.oc_version }}.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -218,14 +218,14 @@ jobs:
             OpenClaw commit: `${{ needs.check.outputs.oc_sha }}`
 
             ### APKs
-            - `openclaw.apk` — thirdParty flavor (full capabilities, recommended for sideloading)
-            - `openclaw-play.apk` — Play flavor (closer to Google Play build)
+            - `openclaw-<version>.apk` — thirdParty flavor (full capabilities, recommended for sideloading)
+            - `openclaw-play-<version>.apk` — Play flavor (closer to Google Play build)
 
             ### Install
             If you already have the Play version installed (`ai.openclaw.app`), uninstall it first. After that, future APKs built by this workflow can be installed as updates because the release signing key is stable:
             ```
             adb uninstall ai.openclaw.app
-            adb install openclaw.apk
+            adb install openclaw-<version>.apk
             ```
 
             ---

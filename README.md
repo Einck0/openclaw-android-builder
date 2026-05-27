@@ -52,8 +52,9 @@ base64 -w 0 openclaw-android-release.keystore
 
 ## APK 说明
 
-- `openclaw.apk`：`thirdPartyRelease`，侧载版，保留完整能力/权限，推荐自己测试用
-- `openclaw-play.apk`：`playRelease`，更接近 Google Play 版
+- `openclaw-<version>.apk`：`thirdPartyRelease`，侧载版，保留完整能力/权限，推荐自己测试用
+- `openclaw-play-<version>.apk`：`playRelease`，更接近 Google Play 版
+- `<version>` 取自 OpenClaw 源码的 `versionName`，如 `2026.5.26`
 
 ## 安装
 
@@ -61,13 +62,13 @@ base64 -w 0 openclaw-android-release.keystore
 
 ```bash
 adb uninstall ai.openclaw.app
-adb install openclaw.apk
+adb install openclaw-2026.5.26.apk
 ```
 
-之后 GitHub Actions 新构建的 `openclaw.apk` 可以直接覆盖安装：
+之后 GitHub Actions 新构建的同签名包可以直接覆盖安装：
 
 ```bash
-adb install -r openclaw.apk
+adb install -r openclaw-2026.5.27.apk
 ```
 
 ## 为什么没有预编译 APK？
